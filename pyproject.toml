@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlx-recurrence"
+version = "0.1.0"
+description = "Fused Metal GPU kernels for SSM and GLA linear recurrence on Apple Silicon"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Paul O. Derrington, Jr.", email = "derrington.collaborative.ai@gmail.com" }
+]
+keywords = [
+    "mlx", "apple-silicon", "metal", "ssm", "mamba", "gla",
+    "linear-recurrence", "state-space-model", "machine-learning"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Operating System :: MacOS",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "mlx>=0.22.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "numpy>=1.24",
+]
+benchmark = [
+    "numpy>=1.24",
+]
+
+[project.urls]
+Homepage   = "https://github.com/d-csil/mlx-recurrence"
+Repository = "https://github.com/d-csil/mlx-recurrence"
+Issues     = "https://github.com/d-csil/mlx-recurrence/issues"
+
+[tool.setuptools.packages.find]
+include = ["mlx_recurrence*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
