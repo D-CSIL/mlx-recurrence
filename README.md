@@ -71,25 +71,36 @@ output = gla_scan_chunked(q, k, v, gates)
 Both `selective_scan_metal` and `gla_scan_metal` are fully differentiable via custom
 VJPs — you can call `mx.grad()` on any loss that uses them.
 
-## Benchmark
+## Benchmarks
 
-Measured on M3 Max (36GB), sequence length 256, batch size 4.
+Measured on M3 Max (36GB), batch size 2. Speedup scales with sequence length —
+the Metal kernels stay nearly flat while the Python fallback grows linearly.
 
-| Implementation | SSM time | vs Python | GLA time | vs Python |
-|----------------|----------|-----------|----------|-----------|
-| Python loop    | baseline |   1.0x    | baseline |   1.0x    |
-| Metal kernel   | **6.2x faster** | 6.2x | **7.1x faster** | 7.1x |
-| Chunked MLX    | ~2–3x    | ~2–3x     | ~2–3x    | ~2–3x     |
+### SSM Selective Scan
 
-The Metal kernel has numerically identical outputs to the Python loop (max absolute
-difference < 1e-4 across 5 random seeds).
+![SSM Benchmark](benchmarks/ssm_benchmark.png)
+
+### GLA Recurrence
+
+![GLA Benchmark](benchmarks/gla_benchmark.png)
+
+### Summary (seq_len=2048)
+
+| Pass | SSM Metal | SSM Python | Speedup | GLA Metal | GLA Python | Speedup |
+|------|-----------|------------|---------|-----------|------------|---------|
+| Forward | 10.8ms | 79.4ms | **7.3x** | 7.9ms | 71.3ms | **9.1x** |
+| Forward + Backward | 64.5ms | 1,224.7ms | **19.0x** | 56.2ms | 1,786.7ms | **31.8x** |
+
+The backward pass speedup is critical for training — without fused Metal kernels,
+training SSM+GLA models on Apple Silicon is impractical at sequence lengths above 512.
+
+Numerically identical outputs to the Python loop (max absolute difference < 1e-4).
 
 Run benchmarks yourself:
 
 ```bash
-python -m mlx_recurrence.benchmarks.bench_scan
-# or from the repo root:
-python benchmarks/bench_scan.py
+python benchmarks/bench_chart.py    # generates PNG charts
+python benchmarks/bench_scan.py     # text output
 ```
 
 ## Testing
@@ -111,16 +122,17 @@ and will be automatically skipped if it is not present.
 
 Each GPU thread handles one `(batch, feature_dim)` pair. The thread maintains the
 `state_dim`-element hidden state `h[n]` in registers and loops over all `L` timesteps
-entirely on-GPU. The backward pass re-runs the Metal forward to recover hidden states
-then computes gradients via chunked vectorized MLX operations (no second Metal kernel
-needed).
+entirely on-GPU. The backward pass runs the adjoint recurrence in a fused Metal kernel,
+sweeping backward through timesteps with per-thread adjoint state in registers. The VJP
+saves `h_all` from the forward pass to avoid re-running the forward kernel.
 
 ### GLA kernel
 
 Each GPU thread handles one `(batch, head, j)` triple — one column of the `Dh x Dh`
 state matrix. The thread maintains that column in registers, applies the gate decay,
 accumulates the outer-product update, and dotproducts with queries for output. The
-backward pass mirrors the SSM approach: Metal forward for states, chunked MLX backward.
+backward pass uses a matching fused Metal kernel for the adjoint recurrence, with
+MLX parallel reductions for cross-dimension gradients (grad_q, grad_k, grad_gates).
 
 ### Chunked MLX fallback
 
@@ -136,8 +148,10 @@ This reduces Python overhead from O(L) to O(L / chunk_size) dispatches and is
 fully auto-differentiable without a custom VJP.
 
 ## Citation
-  If you use mlx-recurrence in your work, please credit:
-  Paul O. Derrington, Jr. — Derrington Collaborative Synthetic Intelligence Labs (D-CSIL)
+
+If you use mlx-recurrence in your work, please credit:
+
+> Paul O. Derrington, Jr. — Derrington Collaborative Synthetic Intelligence Labs (D-CSIL)
 
 ## License
 

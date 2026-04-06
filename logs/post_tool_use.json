@@ -195,5 +195,153 @@
       },
       "tool_use_id": "toolu_015WQttTqBn9C2AXDQvs75jq"
     }
+  },
+  {
+    "timestamp": "2026-04-05T21:05:18.188033",
+    "tool_result": {
+      "session_id": "24a0c2eb-ebef-4725-a4f9-76c908a94d38",
+      "transcript_path": "/Users/paulderrington/.claude/projects/-Users-paulderrington/24a0c2eb-ebef-4725-a4f9-76c908a94d38.jsonl",
+      "cwd": "/Volumes/SuperDock WD Black 4TB/D-CSIL-1/mlx-recurrence",
+      "permission_mode": "acceptEdits",
+      "hook_event_name": "PostToolUse",
+      "tool_name": "Read",
+      "tool_input": {
+        "file_path": "/Volumes/SuperDock WD Black 4TB/D-CSIL-1/mlx-recurrence/README.md",
+        "offset": 148,
+        "limit": 20
+      },
+      "tool_response": {
+        "type": "text",
+        "file": {
+          "filePath": "/Volumes/SuperDock WD Black 4TB/D-CSIL-1/mlx-recurrence/README.md",
+          "content": "fully auto-differentiable without a custom VJP.\n\n## Citation\n<<<<<<< HEAD\n  If you use mlx-recurrence in your work, please credit:\n  Paul O. Derrington, Jr. \u2014 Derrington Collaborative Synthetic Intelligence Labs (D-CSIL)\n=======\n\nIf you use mlx-recurrence in your work, please credit:\n\n> Paul O. Derrington, Jr. \u2014 Derrington Collaborative Synthetic Intelligence Labs (D-CSIL)\n>>>>>>> fd037e9 (Add benchmark charts and update README with v0.2.0 results)\n\n## License\n\nMIT License \u2014 Copyright (c) 2026 Paul O. Derrington, Jr.\n\nMatches the MLX license. See [LICENSE](LICENSE).\n",
+          "numLines": 19,
+          "startLine": 148,
+          "totalLines": 166
+        }
+      },
+      "tool_use_id": "toolu_01JcTXDtKVCGfbFn9KdFveye"
+    }
+  },
+  {
+    "timestamp": "2026-04-05T21:05:24.278024",
+    "tool_result": {
+      "session_id": "24a0c2eb-ebef-4725-a4f9-76c908a94d38",
+      "transcript_path": "/Users/paulderrington/.claude/projects/-Users-paulderrington/24a0c2eb-ebef-4725-a4f9-76c908a94d38.jsonl",
+      "cwd": "/Volumes/SuperDock WD Black 4TB/D-CSIL-1/mlx-recurrence",
+      "permission_mode": "acceptEdits",
+      "hook_event_name": "PostToolUse",
+      "tool_name": "Edit",
+      "tool_input": {
+        "file_path": "/Volumes/SuperDock WD Black 4TB/D-CSIL-1/mlx-recurrence/README.md",
+        "old_string": "## Citation\n<<<<<<< HEAD\n  If you use mlx-recurrence in your work, please credit:\n  Paul O. Derrington, Jr. \u2014 Derrington Collaborative Synthetic Intelligence Labs (D-CSIL)\n=======\n\nIf you use mlx-recurrence in your work, please credit:\n\n> Paul O. Derrington, Jr. \u2014 Derrington Collaborative Synthetic Intelligence Labs (D-CSIL)\n>>>>>>> fd037e9 (Add benchmark charts and update README with v0.2.0 results)",
+        "new_string": "## Citation\n\nIf you use mlx-recurrence in your work, please credit:\n\n> Paul O. Derrington, Jr. \u2014 Derrington Collaborative Synthetic Intelligence Labs (D-CSIL)",
+        "replace_all": false
+      },
+      "tool_response": {
+        "filePath": "/Volumes/SuperDock WD Black 4TB/D-CSIL-1/mlx-recurrence/README.md",
+        "oldString": "## Citation\n<<<<<<< HEAD\n  If you use mlx-recurrence in your work, please credit:\n  Paul O. Derrington, Jr. \u2014 Derrington Collaborative Synthetic Intelligence Labs (D-CSIL)\n=======\n\nIf you use mlx-recurrence in your work, please credit:\n\n> Paul O. Derrington, Jr. \u2014 Derrington Collaborative Synthetic Intelligence Labs (D-CSIL)\n>>>>>>> fd037e9 (Add benchmark charts and update README with v0.2.0 results)",
+        "newString": "## Citation\n\nIf you use mlx-recurrence in your work, please credit:\n\n> Paul O. Derrington, Jr. \u2014 Derrington Collaborative Synthetic Intelligence Labs (D-CSIL)",
+        "originalFile": "# mlx-recurrence\n\nFused Metal GPU kernels for SSM (selective scan) and GLA (gated linear attention)\nlinear recurrence on Apple Silicon. Built on top of [MLX](https://github.com/ml-explore/mlx).\n\nThese are believed to be the **first publicly available fused Metal kernels for linear\nrecurrence**, replacing Python-level for-loops (one Python\u2192Metal dispatch per timestep)\nwith a single GPU kernel dispatch that runs the entire sequence on-device.\n\n## Why this matters\n\nState-space models (Mamba, S4) and gated linear attention models run a sequential\nrecurrence over sequence length L. In MLX the naive Python loop creates L\nPython\u2192Metal round trips \u2014 each adding dispatch overhead. With sequence lengths of\n256\u20132048, this dominates total compute time.\n\n`mlx-recurrence` collapses the entire recurrence into one kernel call per layer,\ngiving 6\u20137x wall-clock speedup on M-series hardware with numerically identical\noutputs (max diff < 1e-4).\n\n## Installation\n\n```bash\npip install mlx-recurrence\n```\n\nRequires: Python >= 3.10, MLX >= 0.22.0, Apple Silicon Mac (Metal GPU).\n\n## Usage\n\n### SSM Selective Scan\n\n```python\nimport mlx.core as mx\nfrom mlx_recurrence import selective_scan_metal, selective_scan_chunked\n\nB, L, D, N = 4, 256, 512, 64\n\nu     = mx.random.normal((B, L, D))\ndelta = mx.abs(mx.random.normal((B, L, D))) * 0.1 + 0.01\nB_in  = mx.random.normal((B, L, N))\nC_in  = mx.random.normal((B, L, N))\nA_neg = -mx.exp(mx.ones((D, N)))  # -exp(A_log), shape [D, N]\n\n# Metal kernel (fastest, supports autograd via custom VJP)\ny = selective_scan_metal(u, delta, B_in, C_in, A_neg)  # -> [B, L, D]\n\n# Pure MLX chunked fallback (auto-differentiable, no Metal required)\ny = selective_scan_chunked(u, delta, B_in, C_in, A_neg, chunk_size=32)\n```\n\n### GLA Recurrence\n\n```python\nfrom mlx_recurrence import gla_scan_metal, gla_scan_chunked\n\nB, L, H, Dh = 4, 256, 8, 64\n\nq     = mx.random.normal((B, L, H, Dh)) * (Dh ** -0.5)\nk     = mx.random.normal((B, L, H, Dh))\nv     = mx.random.normal((B, L, H, Dh))\ngates = mx.sigmoid(mx.random.normal((B, L, H)))\n\n# Metal kernel\noutput = gla_scan_metal(q, k, v, gates)     # -> [B, L, H, Dh]\n\n# Chunked MLX fallback\noutput = gla_scan_chunked(q, k, v, gates)\n```\n\nBoth `selective_scan_metal` and `gla_scan_metal` are fully differentiable via custom\nVJPs \u2014 you can call `mx.grad()` on any loss that uses them.\n\n## Benchmarks\n\nMeasured on M3 Max (36GB), batch size 2. Speedup scales with sequence length \u2014\nthe Metal kernels stay nearly flat while the Python fallback grows linearly.\n\n### SSM Selective Scan\n\n![SSM Benchmark](benchmarks/ssm_benchmark.png)\n\n### GLA Recurrence\n\n![GLA Benchmark](benchmarks/gla_benchmark.png)\n\n### Summary (seq_len=2048)\n\n| Pass | SSM Metal | SSM Python | Speedup | GLA Metal | GLA Python | Speedup |\n|------|-----------|------------|---------|-----------|------------|---------|\n| Forward | 10.8ms | 79.4ms | **7.3x** | 7.9ms | 71.3ms | **9.1x** |\n| Forward + Backward | 64.5ms | 1,224.7ms | **19.0x** | 56.2ms | 1,786.7ms | **31.8x** |\n\nThe backward pass speedup is critical for training \u2014 without fused Metal kernels,\ntraining SSM+GLA models on Apple Silicon is impractical at sequence lengths above 512.\n\nNumerically identical outputs to the Python loop (max absolute difference < 1e-4).\n\nRun benchmarks yourself:\n\n```bash\npython benchmarks/bench_chart.py    # generates PNG charts\npython benchmarks/bench_scan.py     # text output\n```\n\n## Testing\n\n```bash\npip install mlx-recurrence[dev]\npytest tests/\n# or run directly:\npython tests/test_kernels.py\n```\n\nTests 1 and 2 (numerical and gradient correctness) are self-contained and run\nwithout any other dependencies. Tests 3\u20135 require the `d_csil_1` model codebase\nand will be automatically skipped if it is not present.\n\n## Implementation Details\n\n### SSM kernel\n\nEach GPU thread handles one `(batch, feature_dim)` pair. The thread maintains the\n`state_dim`-element hidden state `h[n]` in registers and loops over all `L` timesteps\nentirely on-GPU. The backward pass runs the adjoint recurrence in a fused Metal kernel,\nsweeping backward through timesteps with per-thread adjoint state in registers. The VJP\nsaves `h_all` from the forward pass to avoid re-running the forward kernel.\n\n### GLA kernel\n\nEach GPU thread handles one `(batch, head, j)` triple \u2014 one column of the `Dh x Dh`\nstate matrix. The thread maintains that column in registers, applies the gate decay,\naccumulates the outer-product update, and dotproducts with queries for output. The\nbackward pass uses a matching fused Metal kernel for the adjoint recurrence, with\nMLX parallel reductions for cross-dimension gradients (grad_q, grad_k, grad_gates).\n\n### Chunked MLX fallback\n\nBoth `selective_scan_chunked` and `gla_scan_chunked` avoid Python-level loops using\na closed-form parallel prefix scan within each chunk of size `chunk_size`:\n\n```\nh[t] = P[t] * (h_prev + cumsum(inp / P))\nwhere P[t] = exp(cumsum(log_decay))\n```\n\nThis reduces Python overhead from O(L) to O(L / chunk_size) dispatches and is\nfully auto-differentiable without a custom VJP.\n\n## Citation\n<<<<<<< HEAD\n  If you use mlx-recurrence in your work, please credit:\n  Paul O. Derrington, Jr. \u2014 Derrington Collaborative Synthetic Intelligence Labs (D-CSIL)\n=======\n\nIf you use mlx-recurrence in your work, please credit:\n\n> Paul O. Derrington, Jr. \u2014 Derrington Collaborative Synthetic Intelligence Labs (D-CSIL)\n>>>>>>> fd037e9 (Add benchmark charts and update README with v0.2.0 results)\n\n## License\n\nMIT License \u2014 Copyright (c) 2026 Paul O. Derrington, Jr.\n\nMatches the MLX license. See [LICENSE](LICENSE).\n",
+        "structuredPatch": [
+          {
+            "oldStart": 148,
+            "oldLines": 15,
+            "newStart": 148,
+            "newLines": 10,
+            "lines": [
+              " fully auto-differentiable without a custom VJP.",
+              " ",
+              " ## Citation",
+              "-<<<<<<< HEAD",
+              "-  If you use mlx-recurrence in your work, please credit:",
+              "-  Paul O. Derrington, Jr. \u2014 Derrington Collaborative Synthetic Intelligence Labs (D-CSIL)",
+              "-=======",
+              " ",
+              " If you use mlx-recurrence in your work, please credit:",
+              " ",
+              " > Paul O. Derrington, Jr. \u2014 Derrington Collaborative Synthetic Intelligence Labs (D-CSIL)",
+              "->>>>>>> fd037e9 (Add benchmark charts and update README with v0.2.0 results)",
+              " ",
+              " ## License",
+              " "
+            ]
+          }
+        ],
+        "userModified": false,
+        "replaceAll": false
+      },
+      "tool_use_id": "toolu_01Y4kAazpossuLgSpeaDz8Hc"
+    }
+  },
+  {
+    "timestamp": "2026-04-05T21:05:44.009004",
+    "tool_result": {
+      "session_id": "24a0c2eb-ebef-4725-a4f9-76c908a94d38",
+      "transcript_path": "/Users/paulderrington/.claude/projects/-Users-paulderrington/24a0c2eb-ebef-4725-a4f9-76c908a94d38.jsonl",
+      "cwd": "/Volumes/SuperDock WD Black 4TB/D-CSIL-1/mlx-recurrence",
+      "permission_mode": "acceptEdits",
+      "hook_event_name": "PostToolUse",
+      "tool_name": "Grep",
+      "tool_input": {
+        "pattern": "<<<<<<|>>>>>>|======",
+        "path": "/Volumes/SuperDock WD Black 4TB/D-CSIL-1/mlx-recurrence/README.md",
+        "output_mode": "content"
+      },
+      "tool_response": {
+        "mode": "content",
+        "numFiles": 0,
+        "filenames": [],
+        "content": "",
+        "numLines": 0
+      },
+      "tool_use_id": "toolu_01NVJXntYpaa2fyveGAtBknU"
+    }
+  },
+  {
+    "timestamp": "2026-04-05T21:05:52.407471",
+    "tool_result": {
+      "session_id": "24a0c2eb-ebef-4725-a4f9-76c908a94d38",
+      "transcript_path": "/Users/paulderrington/.claude/projects/-Users-paulderrington/24a0c2eb-ebef-4725-a4f9-76c908a94d38.jsonl",
+      "cwd": "/Volumes/SuperDock WD Black 4TB/D-CSIL-1/mlx-recurrence",
+      "permission_mode": "acceptEdits",
+      "hook_event_name": "PostToolUse",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "cd \"/Volumes/SuperDock WD Black 4TB/D-CSIL-1/mlx-recurrence\" && git diff --name-only --diff-filter=U",
+        "description": "Check for remaining unmerged files"
+      },
+      "tool_response": {
+        "stdout": "",
+        "stderr": "",
+        "interrupted": false,
+        "isImage": false,
+        "noOutputExpected": false
+      },
+      "tool_use_id": "toolu_01QMLkZDjJCHxvZKTMdNYz4K"
+    }
+  },
+  {
+    "timestamp": "2026-04-05T21:05:57.538899",
+    "tool_result": {
+      "session_id": "24a0c2eb-ebef-4725-a4f9-76c908a94d38",
+      "transcript_path": "/Users/paulderrington/.claude/projects/-Users-paulderrington/24a0c2eb-ebef-4725-a4f9-76c908a94d38.jsonl",
+      "cwd": "/Volumes/SuperDock WD Black 4TB/D-CSIL-1/mlx-recurrence",
+      "permission_mode": "acceptEdits",
+      "hook_event_name": "PostToolUse",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "cd \"/Volumes/SuperDock WD Black 4TB/D-CSIL-1/mlx-recurrence\" && git status",
+        "description": "Check status"
+      },
+      "tool_response": {
+        "stdout": "interactive rebase in progress; onto d0aabc1\nLast command done (1 command done):\n   pick fd037e9 # Add benchmark charts and update README with v0.2.0 results\nNo commands remaining.\nYou are currently rebasing branch 'main' on 'd0aabc1'.\n  (all conflicts fixed: run \"git rebase --continue\")\n\nChanges to be committed:\n  (use \"git restore --staged <file>...\" to unstage)\n\tmodified:   README.md\n\tnew file:   benchmarks/bench_chart.py\n\tnew file:   benchmarks/gla_benchmark.png\n\tnew file:   benchmarks/ssm_benchmark.png\n\nChanges not staged for commit:\n  (use \"git add <file>...\" to update what will be committed)\n  (use \"git restore <file>...\" to discard changes in working directory)\n\tmodified:   logs/post_tool_use.json\n\tmodified:   logs/pre_tool_use.json\n\nUntracked files:\n  (use \"git add <file>...\" to include in what will be committed)\n\tdata_cache/\n\tkernel_test_report_20260402_224400.json",
+        "stderr": "",
+        "interrupted": false,
+        "isImage": false,
+        "noOutputExpected": false
+      },
+      "tool_use_id": "toolu_01VdFyYzhw1ynF6zKAPfpWif"
+    }
   }
 ]
