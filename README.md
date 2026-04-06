@@ -135,6 +135,10 @@ where P[t] = exp(cumsum(log_decay))
 This reduces Python overhead from O(L) to O(L / chunk_size) dispatches and is
 fully auto-differentiable without a custom VJP.
 
+## Citation
+  If you use mlx-recurrence in your work, please credit:
+  Paul O. Derrington, Jr. — Derrington Collaborative Synthetic Intelligence Labs (D-CSIL)
+
 ## License
 
 MIT License — Copyright (c) 2026 Paul O. Derrington, Jr.
