@@ -107,6 +107,7 @@ def _ssm_backward_chunked(grad_y, h_all, u, delta, B_in, C_in, A_neg):
     Backward pass for SSM selective scan using chunked vectorized ops.
 
     Pure MLX operations — auto-differentiable, no custom Metal needed.
+    Used as fallback when Metal backward is unavailable.
 
     Adjoint recurrence:
         grad_h[t] = grad_y[t] * C[t] + dA[t+1] * grad_h[t+1]
@@ -167,13 +168,173 @@ def _ssm_backward_chunked(grad_y, h_all, u, delta, B_in, C_in, A_neg):
 
 
 # =============================================================================
+# SSM Backward — Fused Metal Kernel
+# =============================================================================
+
+def _ssm_backward_metal(grad_y, h_all, u, delta, B_in, C_in, A_neg):
+    """
+    Fused Metal kernel backward pass for SSM selective scan.
+
+    Runs the full adjoint recurrence on-GPU in a single pass per thread,
+    computing grad_u, grad_delta, and per-thread grad_A_neg contributions
+    directly. Uses MLX for cross-dimension reductions (grad_B, grad_C).
+
+    Each GPU thread handles one (batch, inner_dim) pair and sweeps
+    backward through L timesteps, maintaining adjoint state in registers.
+    """
+    B_batch, L, inner_dim = u.shape
+    state_dim = A_neg.shape[-1]
+
+    grad_y_flat = grad_y.reshape(-1)
+    h_all_flat  = h_all.reshape(-1)
+    u_flat      = u.reshape(-1)
+    delta_flat  = delta.reshape(-1)
+    B_flat      = B_in.reshape(-1)
+    C_flat      = C_in.reshape(-1)
+    A_flat      = A_neg.reshape(-1)
+
+    source = f"""
+        uint d = thread_position_in_grid.x;
+        uint b = thread_position_in_grid.y;
+
+        if (d >= {inner_dim}u || b >= {B_batch}u) return;
+
+        // Thread-local adjoint state
+        float adj[{state_dim}];
+        for (int n = 0; n < {state_dim}; n++) adj[n] = 0.0f;
+
+        // Thread-local accumulator for grad_A_neg (sum over t)
+        float gA_local[{state_dim}];
+        for (int n = 0; n < {state_dim}; n++) gA_local[n] = 0.0f;
+
+        for (int t = {L - 1}; t >= 0; t--) {{
+            int u_idx = b * {L * inner_dim} + t * {inner_dim} + d;
+            float dt_val = delta[u_idx];
+            float u_val  = u[u_idx];
+            float gy     = grad_y[u_idx];
+
+            float gu  = 0.0f;
+            float gdt = 0.0f;
+
+            for (int n = 0; n < {state_dim}; n++) {{
+                float a  = A_neg[d * {state_dim} + n];
+                int bc_idx = b * {L * state_dim} + t * {state_dim} + n;
+                float bv = B_in[bc_idx];
+                float cv = C_in[bc_idx];
+
+                float decay = exp(dt_val * a);
+
+                int h_idx  = ((b * {L} + t) * {inner_dim} + d) * {state_dim} + n;
+                int hp_idx = ((b * {L} + (t - 1)) * {inner_dim} + d) * {state_dim} + n;
+                float hp = (t > 0) ? h_all[hp_idx] : 0.0f;
+
+                // Add driving term from output gradient
+                adj[n] += gy * cv;
+
+                // Store adjoint for cross-dim reductions
+                adj_out[h_idx] = adj[n];
+
+                // Per-thread output gradients
+                gu  += adj[n] * dt_val * bv;
+                gdt += adj[n] * (a * decay * hp + bv * u_val);
+
+                // Accumulate grad_A_neg contribution (sum over t)
+                gA_local[n] += adj[n] * dt_val * decay * hp;
+
+                // Propagate adjoint backward
+                adj[n] *= decay;
+            }}
+
+            grad_u[u_idx]     = gu;
+            grad_delta[u_idx] = gdt;
+        }}
+
+        // Write grad_A_neg partial sums (per b,d — needs sum over b in MLX)
+        for (int n = 0; n < {state_dim}; n++) {{
+            int gA_idx = (b * {inner_dim} + d) * {state_dim} + n;
+            grad_A_partial[gA_idx] = gA_local[n];
+        }}
+    """
+
+    kernel_name = f"ssm_bwd_v2_{B_batch}_{L}_{inner_dim}_{state_dim}"
+    kernel = _get_or_build_kernel(
+        kernel_name,
+        input_names=["grad_y", "h_all", "u", "delta", "B_in", "C_in", "A_neg"],
+        output_names=["grad_u", "grad_delta", "adj_out", "grad_A_partial"],
+        source=source,
+    )
+
+    grid = (inner_dim, B_batch, 1)
+    tg_x = min(inner_dim, 256)
+    threadgroup = (tg_x, 1, 1)
+
+    results = kernel(
+        inputs=[grad_y_flat, h_all_flat, u_flat, delta_flat, B_flat, C_flat, A_flat],
+        output_shapes=[
+            (B_batch * L * inner_dim,),                  # grad_u
+            (B_batch * L * inner_dim,),                  # grad_delta
+            (B_batch * L * inner_dim * state_dim,),      # adj_out
+            (B_batch * inner_dim * state_dim,),           # grad_A_partial
+        ],
+        output_dtypes=[mx.float32, mx.float32, mx.float32, mx.float32],
+        grid=grid,
+        threadgroup=threadgroup,
+    )
+
+    grad_u     = results[0].reshape(B_batch, L, inner_dim)
+    grad_delta = results[1].reshape(B_batch, L, inner_dim)
+    adj_all    = results[2].reshape(B_batch, L, inner_dim, state_dim)
+    gA_partial = results[3].reshape(B_batch, inner_dim, state_dim)
+
+    # ── MLX parallel reductions ──────────────────────────────────────────
+
+    # grad_B[b,t,n] = sum_d( adj[b,t,d,n] * delta[b,t,d] * u[b,t,d] )
+    dt_u = mx.expand_dims(delta * u, -1)
+    grad_B = mx.sum(adj_all * dt_u, axis=2)
+
+    # grad_C[b,t,n] = sum_d( h[b,t,d,n] * grad_y[b,t,d] )
+    grad_y_exp = mx.expand_dims(grad_y, -1)
+    grad_C = mx.sum(h_all * grad_y_exp, axis=2)
+
+    # grad_A_neg[d,n] = sum_b( gA_partial[b,d,n] )
+    grad_A_neg = mx.sum(gA_partial, axis=0)
+
+    return grad_u, grad_delta, grad_B, grad_C, grad_A_neg
+
+
+# =============================================================================
 # SSM Custom Function — Metal forward + MLX backward
 # =============================================================================
 
 @mx.custom_function
+def _selective_scan_metal_impl(u, delta, B_in, C_in, A_neg):
+    """
+    Internal: returns (y, h_all) so the VJP can access saved states
+    from the forward outputs without re-running the forward kernel.
+
+    Re-running the forward inside the VJP causes Metal buffer aliasing
+    at model scale, producing corrupt gradients.
+    """
+    y, h_all = _ssm_forward_kernel(u, delta, B_in, C_in, A_neg)
+    return y, h_all
+
+
+@_selective_scan_metal_impl.vjp
+def _selective_scan_metal_vjp(primals, cotangents, outputs):
+    u, delta, B_in, C_in, A_neg = primals
+    grad_y = cotangents[0]
+    _y, h_all = outputs  # Use saved h_all from forward — no re-run
+
+    grad_u, grad_delta, grad_B, grad_C, grad_A = _ssm_backward_metal(
+        grad_y, h_all, u, delta, B_in, C_in, A_neg
+    )
+
+    return grad_u, grad_delta, grad_B, grad_C, grad_A
+
+
 def selective_scan_metal(u, delta, B_in, C_in, A_neg):
     """
-    Fused selective scan: Metal kernel forward, chunked MLX backward.
+    Fused selective scan: Metal kernel forward + Metal kernel backward.
 
     Drop-in replacement for a Python for-loop SSM selective scan.
 
@@ -186,22 +347,8 @@ def selective_scan_metal(u, delta, B_in, C_in, A_neg):
 
     Returns: [B, L, inner_dim]
     """
-    y, _h_all = _ssm_forward_kernel(u, delta, B_in, C_in, A_neg)
+    y, _h_all = _selective_scan_metal_impl(u, delta, B_in, C_in, A_neg)
     return y
-
-
-@selective_scan_metal.vjp
-def selective_scan_metal_vjp(primals, cotangents, outputs):
-    u, delta, B_in, C_in, A_neg = primals
-    grad_y = cotangents[0]
-
-    _, h_all = _ssm_forward_kernel(u, delta, B_in, C_in, A_neg)
-
-    grad_u, grad_delta, grad_B, grad_C, grad_A = _ssm_backward_chunked(
-        grad_y, h_all, u, delta, B_in, C_in, A_neg
-    )
-
-    return grad_u, grad_delta, grad_B, grad_C, grad_A
 
 
 # =============================================================================

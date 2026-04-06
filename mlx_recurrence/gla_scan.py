@@ -111,6 +111,8 @@ def _gla_backward_chunked(grad_out, h_all, q, k, v, gates):
     """
     Backward pass for GLA recurrence using chunked vectorized ops.
 
+    Pure MLX operations — used as fallback when Metal backward is unavailable.
+
     Adjoint recurrence:
         grad_h[t] = q[t] outer grad_out[t] + gate[t+1] * grad_h[t+1]
     runs backward from t = L-1 to 0.
@@ -165,13 +167,153 @@ def _gla_backward_chunked(grad_out, h_all, q, k, v, gates):
 
 
 # =============================================================================
+# GLA Backward — Fused Metal Kernel
+# =============================================================================
+
+def _gla_backward_metal(grad_out, h_all, q, k, v, gates):
+    """
+    Fused Metal kernel backward pass for GLA recurrence.
+
+    Each GPU thread handles one (batch*head, j) pair and sweeps backward
+    through L timesteps, maintaining the adjoint h[:,j] column in registers.
+
+    Computes grad_v directly per-thread. Outputs full adjoint tensor for
+    MLX parallel reductions on grad_q, grad_k, grad_gates.
+    """
+    B_batch, L, H, Dh = q.shape
+
+    q_flat     = q.reshape(-1)
+    k_flat     = k.reshape(-1)
+    v_flat     = v.reshape(-1)
+    g_flat     = gates.reshape(-1)
+    go_flat    = grad_out.reshape(-1)
+    h_all_flat = h_all.reshape(-1)
+
+    source = f"""
+        uint j  = thread_position_in_grid.x;
+        uint bh = thread_position_in_grid.y;
+
+        if (j >= {Dh}u || bh >= {B_batch * H}u) return;
+
+        uint b    = bh / {H}u;
+        uint head = bh % {H}u;
+
+        // Thread-local adjoint state: one column of [Dh x Dh] matrix
+        float adj[{Dh}];
+        for (int i = 0; i < {Dh}; i++) adj[i] = 0.0f;
+
+        for (int t = {L - 1}; t >= 0; t--) {{
+            int g_idx   = b * {L * H} + t * {H} + head;
+            float gate  = gates[g_idx];
+
+            int kv_base = (b * {L} + t) * {H * Dh} + head * {Dh};
+            float go_j  = grad_out[kv_base + j];
+
+            float gv_j = 0.0f;
+
+            for (int i = 0; i < {Dh}; i++) {{
+                float qi = q[kv_base + i];
+                float ki = k[kv_base + i];
+
+                // Add driving term
+                adj[i] += qi * go_j;
+
+                // Store adjoint for cross-dim reductions
+                int h_idx = ((((b * {L} + t) * {H} + head) * {Dh} + i) * {Dh} + j);
+                adj_out[h_idx] = adj[i];
+
+                // Accumulate grad_v[j] = sum_i(adj[i] * k[i])
+                gv_j += adj[i] * ki;
+
+                // Propagate adjoint backward
+                adj[i] *= gate;
+            }}
+
+            grad_v[kv_base + j] = gv_j;
+        }}
+    """
+
+    kernel_name = f"gla_bwd_v2_{B_batch}_{L}_{H}_{Dh}"
+    kernel = _get_or_build_kernel(
+        kernel_name,
+        input_names=["q", "k", "v", "gates", "grad_out", "h_all"],
+        output_names=["grad_v", "adj_out"],
+        source=source,
+    )
+
+    grid = (Dh, B_batch * H, 1)
+    tg_x = min(Dh, 64)
+    threadgroup = (tg_x, 1, 1)
+
+    results = kernel(
+        inputs=[q_flat, k_flat, v_flat, g_flat, go_flat, h_all_flat],
+        output_shapes=[
+            (B_batch * L * H * Dh,),              # grad_v
+            (B_batch * L * H * Dh * Dh,),         # adj_out
+        ],
+        output_dtypes=[mx.float32, mx.float32],
+        grid=grid,
+        threadgroup=threadgroup,
+    )
+
+    grad_v  = results[0].reshape(B_batch, L, H, Dh)
+    adj_all = results[1].reshape(B_batch, L, H, Dh, Dh)
+
+    # ── MLX parallel reductions ──────────────────────────────────────────
+
+    # grad_q[b,t,h,i] = sum_j( grad_out[b,t,h,j] * h_all[b,t,h,i,j] )
+    grad_q = mx.sum(
+        mx.expand_dims(grad_out, -2) * h_all,
+        axis=-1
+    )
+
+    # grad_k[b,t,h,i] = sum_j( adj[b,t,h,i,j] * v[b,t,h,j] )
+    v_exp  = mx.expand_dims(v, -2)
+    grad_k = mx.sum(adj_all * v_exp, axis=-1)
+
+    # grad_gate[b,t,h] = sum_{i,j}( adj[b,t,h,i,j] * h_prev[b,t,h,i,j] )
+    h_prev = mx.concatenate([
+        mx.zeros((B_batch, 1, H, Dh, Dh)),
+        h_all[:, :-1, :, :, :]
+    ], axis=1)
+    grad_gates = mx.sum(adj_all * h_prev, axis=(-2, -1))
+
+    return grad_q, grad_k, grad_v, grad_gates
+
+
+# =============================================================================
 # GLA Custom Function — Metal forward + MLX backward
 # =============================================================================
 
 @mx.custom_function
+def _gla_scan_metal_impl(q, k, v, gates):
+    """
+    Internal: returns (output, h_all) so the VJP can access saved states
+    from the forward outputs without re-running the forward kernel.
+
+    Re-running the forward inside the VJP causes Metal buffer aliasing
+    at model scale, producing corrupt gradients.
+    """
+    output, h_all = _gla_forward_kernel(q, k, v, gates)
+    return output, h_all
+
+
+@_gla_scan_metal_impl.vjp
+def _gla_scan_metal_vjp(primals, cotangents, outputs):
+    q, k, v, gates = primals
+    grad_out = cotangents[0]
+    _output, h_all = outputs  # Use saved h_all from forward — no re-run
+
+    grad_q, grad_k, grad_v, grad_gates = _gla_backward_metal(
+        grad_out, h_all, q, k, v, gates
+    )
+
+    return grad_q, grad_k, grad_v, grad_gates
+
+
 def gla_scan_metal(q, k, v, gates):
     """
-    Fused GLA recurrence: Metal kernel forward, chunked MLX backward.
+    Fused GLA recurrence: Metal kernel forward + Metal kernel backward.
 
     Drop-in replacement for a Python for-loop GLA recurrence.
 
@@ -183,22 +325,8 @@ def gla_scan_metal(q, k, v, gates):
 
     Returns: [B, L, H, Dh]
     """
-    output, _h_all = _gla_forward_kernel(q, k, v, gates)
+    output, _h_all = _gla_scan_metal_impl(q, k, v, gates)
     return output
-
-
-@gla_scan_metal.vjp
-def gla_scan_metal_vjp(primals, cotangents, outputs):
-    q, k, v, gates = primals
-    grad_out = cotangents[0]
-
-    _, h_all = _gla_forward_kernel(q, k, v, gates)
-
-    grad_q, grad_k, grad_v, grad_gates = _gla_backward_chunked(
-        grad_out, h_all, q, k, v, gates
-    )
-
-    return grad_q, grad_k, grad_v, grad_gates
 
 
 # =============================================================================
