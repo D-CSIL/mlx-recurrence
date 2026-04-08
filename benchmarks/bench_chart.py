@@ -192,7 +192,7 @@ def make_chart(seq_lens, fwd_metal, fwd_python, bwd_metal, bwd_python,
     width = 0.35
 
     # Forward
-    bars1 = ax1.bar(x - width/2, fwd_python, width, label='Python Fallback',
+    bars1 = ax1.bar(x - width/2, fwd_python, width, label='MLX Fallback',
                     color='#e74c3c', alpha=0.85)
     bars2 = ax1.bar(x + width/2, fwd_metal, width, label='Metal Kernel',
                     color='#2ecc71', alpha=0.85)
@@ -212,7 +212,7 @@ def make_chart(seq_lens, fwd_metal, fwd_python, bwd_metal, bwd_python,
                      color='#27ae60')
 
     # Backward
-    bars3 = ax2.bar(x - width/2, bwd_python, width, label='Python Fallback',
+    bars3 = ax2.bar(x - width/2, bwd_python, width, label='MLX Fallback',
                     color='#e74c3c', alpha=0.85)
     bars4 = ax2.bar(x + width/2, bwd_metal, width, label='Metal Kernel',
                     color='#2ecc71', alpha=0.85)
@@ -244,11 +244,11 @@ if __name__ == "__main__":
     gla_fm, gla_fp, gla_bm, gla_bp = bench_gla()
 
     make_chart(SEQ_LENS, ssm_fm, ssm_fp, ssm_bm, ssm_bp,
-               "SSM Selective Scan — Metal Kernel vs Python Fallback",
+               "SSM Selective Scan — Metal Kernel vs MLX Fallback",
                "benchmarks/ssm_benchmark.png")
 
     make_chart(SEQ_LENS, gla_fm, gla_fp, gla_bm, gla_bp,
-               "GLA Recurrence — Metal Kernel vs Python Fallback",
+               "GLA Recurrence — Metal Kernel vs MLX Fallback",
                "benchmarks/gla_benchmark.png")
 
     print("\nDone! Add these to your README:")

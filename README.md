@@ -86,10 +86,16 @@ the Metal kernels stay nearly flat while the Python fallback grows linearly.
 
 ### Summary (seq_len=2048)
 
-| Pass | SSM Metal | SSM Python | Speedup | GLA Metal | GLA Python | Speedup |
+| Pass | SSM Metal | SSM Fallback | Speedup | GLA Metal | GLA Fallback | Speedup |
 |------|-----------|------------|---------|-----------|------------|---------|
-| Forward | 10.8ms | 79.4ms | **7.3x** | 7.9ms | 71.3ms | **9.1x** |
-| Forward + Backward | 64.5ms | 1,224.7ms | **19.0x** | 56.2ms | 1,786.7ms | **31.8x** |
+| Forward (kernel vs Python loop) | 10.8ms | 79.4ms | **7.3x** | 7.9ms | 71.3ms | **9.1x** |
+| Fwd + Bwd (kernel vs chunked MLX autograd) | 64.5ms | 1,224.7ms | **19.0x** | 56.2ms | 1,786.7ms | **31.8x** |
+
+**Note on speedups:** Forward compares the fused Metal kernel against a Python `for`-loop
+over timesteps (one Metal dispatch per step). Forward + Backward compares the fused Metal
+VJP against MLX autograd through the chunked fallback (`selective_scan_chunked` /
+`gla_scan_chunked`). These are kernel-level isolations — end-to-end training speedup
+(including embedding, FFN, loss, optimizer) is approximately **3x** wall-clock.
 
 The backward pass speedup is critical for training — without fused Metal kernels,
 training SSM+GLA models on Apple Silicon is impractical at sequence lengths above 512.
