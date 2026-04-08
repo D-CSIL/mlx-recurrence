@@ -15,8 +15,8 @@ Python→Metal round trips — each adding dispatch overhead. With sequence leng
 256–2048, this dominates total compute time.
 
 `mlx-recurrence` collapses the entire recurrence into one kernel call per layer,
-giving 6–7x wall-clock speedup on M-series hardware with numerically identical
-outputs (max diff < 1e-4).
+giving 6–7x forward-pass kernel speedup on M-series hardware with numerically
+identical outputs (max diff < 1e-4).
 
 ## Installation
 
@@ -94,8 +94,8 @@ the Metal kernels stay nearly flat while the Python fallback grows linearly.
 **Note on speedups:** Forward compares the fused Metal kernel against a Python `for`-loop
 over timesteps (one Metal dispatch per step). Forward + Backward compares the fused Metal
 VJP against MLX autograd through the chunked fallback (`selective_scan_chunked` /
-`gla_scan_chunked`). These are kernel-level isolations — end-to-end training speedup
-(including embedding, FFN, loss, optimizer) is approximately **3x** wall-clock.
+`gla_scan_chunked`). These are kernel-level isolations — end-to-end training
+speedup (including embedding, FFN, loss, optimizer) is approximately **3x**.
 
 The backward pass speedup is critical for training — without fused Metal kernels,
 training SSM+GLA models on Apple Silicon is impractical at sequence lengths above 512.
