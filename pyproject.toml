@@ -4,15 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mlx-recurrence"
-version = "0.2.0"
-description = "Fused Metal GPU kernels for SSM and GLA linear recurrence on Apple Silicon"
+version = "0.2.0.dev0"
+description = "A plug-in framework for linear-recurrence Metal kernels on Apple Silicon (SSD, GLA, RG-LRU)"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [
     { name = "Paul O. Derrington, Jr.", email = "derrington.collaborative.ai@gmail.com" }
 ]
 keywords = [
-    "mlx", "apple-silicon", "metal", "ssm", "mamba", "gla",
+    "mlx", "apple-silicon", "metal", "ssm", "mamba", "gla", "rglru",
+    "griffin", "recurrentgemma", "flash-linear-attention",
     "linear-recurrence", "state-space-model", "machine-learning"
 ]
 classifiers = [
