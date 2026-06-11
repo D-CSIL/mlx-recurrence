@@ -39,3 +39,6 @@ env/
 htmlcov/
 data_cache/
 *.json
+
+# local agent-hook logs — not part of the package
+logs/
