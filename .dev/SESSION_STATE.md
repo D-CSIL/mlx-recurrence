@@ -25,9 +25,17 @@ without touching the original repo or the live D-CSIL-3 training tree.
 - Usage: `from mlx_recurrence import ssd_scan, gla_scan, rglru_scan`
   (run pytest first in any new environment).
 
-## Remaining before GitHub push (origin = the D-CSIL-1 repo; GitHub remote
-   is on the PRIVATE D-CSIL/mlx-recurrence repo)
-1. Gated DeltaNet implementation (3 phases, design doc ready)
-2. README refresh: legacy vs v2 bench table from docs/validation/ + the
-   multi-day stability note once the live v3 training run completes
-3. Decide repo layout on GitHub: push v2-framework branch or merge to main
+## GitHub status (updated 2026-06-11)
+**PUSHED:** `v2-framework` branch is live on github.com/D-CSIL/mlx-recurrence
+(commit 6e586be7, remote name `github` in this clone). NOTE: the repo is
+**PUBLIC**, not private as previously recorded. README was refreshed before
+push (v2 API docs, real-run validation numbers from docs/validation/, legacy
+section preserved); local agent-hook logs/ untracked. `main` is untouched —
+merge decision still Paul's.
+
+## Remaining
+1. Merge v2-framework -> main (Paul's call; suggest after the live run ends
+   ~2026-06-15 so the multi-day stability note can go in the same merge)
+2. Gated DeltaNet implementation (3 phases, design doc ready)
+3. PyPI release of 0.2.0 once merged (README install section says
+   from-source for v2 until then)
