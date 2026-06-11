@@ -37,6 +37,8 @@ import mlx.nn as nn
 from mlx_recurrence import (
     selective_scan_metal,
     gla_scan_metal,
+)
+from mlx_recurrence.legacy import (
     _ssm_forward_kernel,
     _gla_forward_kernel,
 )

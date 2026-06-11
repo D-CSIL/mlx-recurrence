@@ -1,32 +1,80 @@
-"""mlx_recurrence — Fused Metal kernels for linear recurrence on Apple Silicon."""
+"""mlx_recurrence — A plug-in framework for linear-recurrence Metal kernels
+on Apple Silicon ("flash-linear-attention for MLX").
 
-from .ssm_scan import (
+Each kernel is a self-contained plug-in built on a shared chassis
+(:mod:`mlx_recurrence._chassis`) that supplies the segment-checkpoint +
+recompute backward pattern, shape validation, and a parity-test helper. The
+Metal source for each recurrence stays in its own module, readable per-kernel.
+
+v2 kernels (checkpoint + recompute, fused simd reductions, chunked-prefill
+final-state variants):
+    ssd     — Mamba-2-style head-wise SSD selective scan
+    gla     — Gated Linear Attention recurrence
+    rglru   — RG-LRU diagonal recurrence (Griffin / RecurrentGemma)
+
+The original v0.1 token-loop kernels remain available under
+``mlx_recurrence.legacy`` and are re-exported at top level for backwards
+compatibility (``selective_scan_metal``, ``gla_scan_metal``, ...).
+"""
+
+# --- v2 chassis-based kernels ---------------------------------------------
+from .ssd import (
+    ssd_scan,
+    ssd_scan_with_state,
+    ssd_scan_reference,
+)
+from .gla import (
+    gla_scan,
+    gla_scan_with_state,
+    gla_scan_reference,
+)
+from .rglru import (
+    rglru_scan,
+    rglru_scan_with_state,
+    rglru_scan_reference,
+)
+
+# --- shared chassis (public for building new plug-in kernels) -------------
+from ._chassis import (
+    DEFAULT_SEG,
+    get_or_build_kernel,
+    check_segment_shape,
+    parity_check,
+)
+
+# --- legacy v0.1 kernels (backwards compatibility) ------------------------
+from . import legacy
+from .legacy import (
     selective_scan_metal,
     selective_scan_chunked,
-    _ssm_forward_kernel,
-    _ssm_backward_chunked,
-    _ssm_backward_metal,
-)
-from .gla_scan import (
     gla_scan_metal,
     gla_scan_chunked,
-    _gla_forward_kernel,
-    _gla_backward_chunked,
-    _gla_backward_metal,
 )
 
 __all__ = [
+    # v2 SSD
+    "ssd_scan",
+    "ssd_scan_with_state",
+    "ssd_scan_reference",
+    # v2 GLA
+    "gla_scan",
+    "gla_scan_with_state",
+    "gla_scan_reference",
+    # v2 RG-LRU
+    "rglru_scan",
+    "rglru_scan_with_state",
+    "rglru_scan_reference",
+    # chassis
+    "DEFAULT_SEG",
+    "get_or_build_kernel",
+    "check_segment_shape",
+    "parity_check",
+    # legacy subpackage + re-exports
+    "legacy",
     "selective_scan_metal",
     "selective_scan_chunked",
     "gla_scan_metal",
     "gla_scan_chunked",
-    # lower-level kernels (public for testing / advanced use)
-    "_ssm_forward_kernel",
-    "_ssm_backward_chunked",
-    "_ssm_backward_metal",
-    "_gla_forward_kernel",
-    "_gla_backward_chunked",
-    "_gla_backward_metal",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.2.0.dev0"

@@ -1,157 +1,225 @@
 # mlx-recurrence
 
-Fused Metal GPU kernels for SSM (selective scan) and GLA (gated linear attention)
-linear recurrence on Apple Silicon. Built on top of [MLX](https://github.com/ml-explore/mlx).
+A plug-in framework of **fused Metal GPU kernels for linear recurrence on Apple
+Silicon** — think *flash-linear-attention for [MLX](https://github.com/ml-explore/mlx)*.
 
-These are believed to be the **first publicly available fused Metal kernels for linear
-recurrence**, replacing Python-level for-loops (one Python→Metal dispatch per timestep)
-with a single GPU kernel dispatch that runs the entire sequence on-device.
+Sequential recurrences (SSMs, gated linear attention, diagonal RNNs) are the one
+thing MLX cannot fuse for free: a Python loop over `L` timesteps costs `L`
+Python→Metal dispatches. These kernels collapse the entire recurrence into a
+single dispatch, with a **segment-checkpoint + recompute backward** that cuts
+training memory by 12–18× over storing the full state history.
 
-## Why this matters
+| Kernel | Recurrence | Used by | State |
+|---|---|---|---|
+| `ssd_scan` | Mamba-2-style head-wise SSD selective scan | Mamba-2 / SSM hybrids | `[B, H, Dh, N]` |
+| `gla_scan` | Gated Linear Attention (scalar forget gate, outer-product write) | GLA / linear-attention hybrids | `[B, H, Dh, Dh]` |
+| `rglru_scan` | RG-LRU diagonal scan | Griffin / RecurrentGemma-style | `[B, D]` |
 
-State-space models (Mamba, S4) and gated linear attention models run a sequential
-recurrence over sequence length L. In MLX the naive Python loop creates L
-Python→Metal round trips — each adding dispatch overhead. With sequence lengths of
-256–2048, this dominates total compute time.
+Each kernel is a self-contained plug-in on a shared chassis
+(`mlx_recurrence._chassis`) that provides the checkpoint+recompute pattern,
+shape validation, and a parity-test helper — adding a new recurrence means
+writing one Metal source pair and its VJP wiring, not rebuilding the
+infrastructure. The original v0.1 kernels remain available under
+`mlx_recurrence.legacy` (and re-exported at top level) for backwards
+compatibility.
 
-`mlx-recurrence` collapses the entire recurrence into one kernel call per layer,
-giving 6–7x forward-pass kernel speedup on M-series hardware with numerically
-identical outputs (max diff < 1e-4).
+## Validated in production
+
+These are not microbenchmark-only kernels. The v2 SSD and GLA kernels were
+dropped into a live multi-week D-CSIL SSM+GLA hybrid training run mid-flight
+(checkpoint pause → parity gates → resume), on an M3 Max, bf16, batch 3,
+L=512:
+
+| Gate | v1 (full state history) | v2 (checkpoint + recompute) |
+|---|---|---|
+| Kernel parity (fwd + every gradient) | — | ~1e-7 rel, all gates PASS |
+| Peak training memory | 23.88 GB | **10.34 GB** |
+| Sustained tokens/sec | ~1,074 | **~1,481–1,540 (≈1.4×)** |
+| Loss continuity across the swap | — | clean (no NaN/inf, same loss band) |
+
+Full report: [`docs/validation/V3_VALIDATION_REPORT_20260610.md`](docs/validation/V3_VALIDATION_REPORT_20260610.md)
+(the consuming training repo names these kernels "v3" in its shim — same code).
+Note the baseline above is a run *already using fused v0.1-style kernels* —
+the gains over having no custom kernels at all are far larger (next section).
+
+## Benchmarks
+
+Two baselines matter, and they answer different questions:
+
+1. **vs. no custom kernels at all** — the Python per-step loop or chunked-MLX
+   fallback a user would otherwise write. This is the speedup you get by
+   adopting the package.
+2. **v2 vs. v0.1-style full-history kernels** — what the
+   checkpoint+recompute redesign adds on top, mainly for training memory.
+
+### 1. Fused kernels vs. no custom kernels (M3 Max, seq_len=2048)
+
+| Pass | SSM | GLA |
+|---|---|---|
+| Forward — fused kernel vs Python per-step loop | **7.3×** | **9.1×** |
+| Forward + backward — fused VJP vs chunked-MLX autograd | **19.0×** | **31.8×** |
+
+(Measured for the v0.1 release; charts in `benchmarks/`. Without fused
+kernels, training these recurrences on Apple Silicon is impractical above
+seq_len ≈ 512 — the backward pass is the killer.)
+
+The v2 kernels measured faster still at training shapes (next table), so
+vs-no-kernels speedups for v2 are expected to be at least this large. A
+direct single-shape v2-vs-no-kernels measurement is planned once the current
+production run frees the GPU, and will replace this estimate.
+
+### 2. v2 vs. v0.1-style full-history kernels (training shapes: B=3, L=512, H=12, Dh=64)
+
+| Kernel | fwd | fwd + bwd | peak memory |
+|---|---|---|---|
+| SSD, full-history baseline | 3.14 ms | 32.22 ms | 1,792 MB |
+| **SSD v2** | **2.30 ms** | **17.34 ms (1.86×)** | **145 MB (12×)** |
+| GLA, full-history baseline | 2.10 ms | 17.92 ms | 1,477 MB |
+| **GLA v2** | **1.41 ms** | **12.06 ms (1.49×)** | **81 MB (18×)** |
+
+The memory column is the one that matters for training: the baseline stores
+every per-timestep state for the backward pass; the v2 kernels store only
+segment-boundary checkpoints (1/32 of the writes) and recompute each segment
+into a small scratch buffer that stays cache-resident during the adjoint sweep.
 
 ## Installation
 
 ```bash
+# v0.1 legacy kernels (PyPI)
 pip install mlx-recurrence
+
+# v2 framework (this branch, from source)
+git clone https://github.com/D-CSIL/mlx-recurrence.git
+cd mlx-recurrence && git checkout v2-framework
+pip install -e .
 ```
 
 Requires: Python >= 3.10, MLX >= 0.22.0, Apple Silicon Mac (Metal GPU).
 
-## Usage
+## Usage (v2 kernels)
 
-### SSM Selective Scan
+All v2 kernels are fully differentiable (`mx.grad` / `mx.value_and_grad`
+work through them via custom VJPs), keep **fp32 state and accumulation
+regardless of input dtype** (bf16 inputs widen implicitly), and share two
+shape constraints from the checkpoint + simd-reduction pattern:
+
+```
+L  % seg == 0        # sequence tiles into segments (seg defaults to 32)
+lane_dim % 32 == 0   # Dh for ssd/gla, D for rglru (32-lane simdgroups)
+```
+
+### SSD selective scan (Mamba-2 style)
 
 ```python
 import mlx.core as mx
-from mlx_recurrence import selective_scan_metal, selective_scan_chunked
+from mlx_recurrence import ssd_scan, ssd_scan_with_state
 
-B, L, D, N = 4, 256, 512, 64
+B, L, H, Dh, N = 3, 512, 12, 64, 16
 
-u     = mx.random.normal((B, L, D))
-delta = mx.abs(mx.random.normal((B, L, D))) * 0.1 + 0.01
-B_in  = mx.random.normal((B, L, N))
-C_in  = mx.random.normal((B, L, N))
-A_neg = -mx.exp(mx.ones((D, N)))  # -exp(A_log), shape [D, N]
+u     = mx.random.normal((B, L, H, Dh))                  # input
+delta = mx.abs(mx.random.normal((B, L, H))) * 0.1 + 0.01 # per-token step size
+B_in  = mx.random.normal((B, L, H, N))                   # input projection
+C_in  = mx.random.normal((B, L, H, N))                   # output projection
+A_neg = -mx.exp(mx.random.normal((H, N)))                # decay rates, < 0
 
-# Metal kernel (fastest, supports autograd via custom VJP)
-y = selective_scan_metal(u, delta, B_in, C_in, A_neg)  # -> [B, L, D]
-
-# Pure MLX chunked fallback (auto-differentiable, no Metal required)
-y = selective_scan_chunked(u, delta, B_in, C_in, A_neg, chunk_size=32)
+y = ssd_scan(u, delta, B_in, C_in, A_neg)                # -> [B, L, H, Dh]
+y, final_state = ssd_scan_with_state(u, delta, B_in, C_in, A_neg)  # chunked prefill
 ```
 
-### GLA Recurrence
+### GLA recurrence
 
 ```python
-from mlx_recurrence import gla_scan_metal, gla_scan_chunked
+from mlx_recurrence import gla_scan, gla_scan_with_state
 
-B, L, H, Dh = 4, 256, 8, 64
+B, L, H, Dh = 3, 512, 12, 64
 
-q     = mx.random.normal((B, L, H, Dh)) * (Dh ** -0.5)
+q     = mx.random.normal((B, L, H, Dh)) * (Dh ** -0.5)   # pre-scaled / post-RoPE
 k     = mx.random.normal((B, L, H, Dh))
 v     = mx.random.normal((B, L, H, Dh))
-gates = mx.sigmoid(mx.random.normal((B, L, H)))
+gates = mx.sigmoid(mx.random.normal((B, L, H)))          # scalar forget gate, (0,1)
 
-# Metal kernel
-output = gla_scan_metal(q, k, v, gates)     # -> [B, L, H, Dh]
-
-# Chunked MLX fallback
-output = gla_scan_chunked(q, k, v, gates)
+o = gla_scan(q, k, v, gates)                             # -> [B, L, H, Dh]
+o, final_state = gla_scan_with_state(q, k, v, gates)     # state: [B, H, Dh, Dh]
 ```
 
-Both `selective_scan_metal` and `gla_scan_metal` are fully differentiable via custom
-VJPs — you can call `mx.grad()` on any loss that uses them.
+### RG-LRU diagonal scan (Griffin / RecurrentGemma)
 
-## Benchmarks
+The kernel handles the inner linear scan `h_t = a_t ⊙ h_{t-1} + b_t`; compute
+the gate `a` and the already-gated input `b` in pure MLX (cheap, elementwise,
+auto-differentiable) and pass them in. The kernel only multiplies — `a` may be
+any real value, not just `(0, 1)` (negative / oscillating gates are covered by
+the test suite).
 
-Measured on M3 Max (36GB), batch size 2. Speedup scales with sequence length —
-the Metal kernels stay nearly flat while the Python fallback grows linearly.
+```python
+from mlx_recurrence import rglru_scan, rglru_scan_with_state
 
-### SSM Selective Scan
+B, L, D = 3, 512, 1536
 
-![SSM Benchmark](benchmarks/ssm_benchmark.png)
+a = mx.sigmoid(mx.random.normal((B, L, D)))              # per-channel gate
+b = mx.random.normal((B, L, D))                          # gated input
 
-### GLA Recurrence
-
-![GLA Benchmark](benchmarks/gla_benchmark.png)
-
-### Summary (seq_len=2048)
-
-| Pass | SSM Metal | SSM Fallback | Speedup | GLA Metal | GLA Fallback | Speedup |
-|------|-----------|------------|---------|-----------|------------|---------|
-| Forward (kernel vs Python loop) | 10.8ms | 79.4ms | **7.3x** | 7.9ms | 71.3ms | **9.1x** |
-| Fwd + Bwd (kernel vs chunked MLX autograd) | 64.5ms | 1,224.7ms | **19.0x** | 56.2ms | 1,786.7ms | **31.8x** |
-
-**Note on speedups:** Forward compares the fused Metal kernel against a Python `for`-loop
-over timesteps (one Metal dispatch per step). Forward + Backward compares the fused Metal
-VJP against MLX autograd through the chunked fallback (`selective_scan_chunked` /
-`gla_scan_chunked`). These are kernel-level isolations — end-to-end training
-speedup (including embedding, FFN, loss, optimizer) is approximately **3x**.
-
-The backward pass speedup is critical for training — without fused Metal kernels,
-training SSM+GLA models on Apple Silicon is impractical at sequence lengths above 512.
-
-Numerically identical outputs to the Python loop (max absolute difference < 1e-4).
-
-Run benchmarks yourself:
-
-```bash
-python benchmarks/bench_chart.py    # generates PNG charts
-python benchmarks/bench_scan.py     # text output
+y = rglru_scan(a, b)                                     # -> [B, L, D]
+y, final_state = rglru_scan_with_state(a, b)             # state: [B, D]
 ```
+
+Every kernel ships a pure-MLX reference (`*_scan_reference`) for parity
+testing and as a fallback on shapes that violate the constraints.
 
 ## Testing
 
 ```bash
-pip install mlx-recurrence[dev]
-pytest tests/
-# or run directly:
-python tests/test_kernels.py
+pytest tests/        # 38 tests, ~3 s, tiny shapes
 ```
 
-Tests 1 and 2 (numerical and gradient correctness) are self-contained and run
-without any other dependencies. Tests 3–5 require the `d_csil_1` model codebase
-and will be automatically skipped if it is not present.
+- `tests/test_v2_ssd.py`, `test_v2_gla.py`, `test_v2_rglru.py` — framework
+  parity suites: forward output **and every gradient** compared against the
+  pure-MLX reference (two shape configs per kernel, multi-segment, plus
+  final-state checks). Negative-gate coverage for `rglru`.
+- `tests/test_v2_legacy_compat.py` — the legacy top-level re-exports keep
+  working.
+- `tests/test_kernels.py`, `test_backward_metal.py` — original v0.1 suites,
+  unchanged.
 
-## Implementation Details
+## Implementation details
 
-### SSM kernel
+### The chassis pattern (shared by all v2 kernels)
 
-Each GPU thread handles one `(batch, feature_dim)` pair. The thread maintains the
-`state_dim`-element hidden state `h[n]` in registers and loops over all `L` timesteps
-entirely on-GPU. The backward pass runs the adjoint recurrence in a fused Metal kernel,
-sweeping backward through timesteps with per-thread adjoint state in registers. The VJP
-saves `h_all` from the forward pass to avoid re-running the forward kernel.
+**Forward:** run the recurrence once; write only the state at each segment
+boundary (`seg=32` → 1/32 the state writes). The last checkpoint doubles as
+the chunk's final state, enabling chunked prefill via the `*_with_state`
+variants.
 
-### GLA kernel
+**Backward:** walk segments newest → oldest. For each segment, recompute its
+per-timestep states from the preceding checkpoint into a small scratch buffer
+(one segment's worth — stays resident in the system-level cache instead of
+streaming the full history through DRAM), then run the adjoint sweep.
+Cross-lane gradient reductions are fused in-kernel with `simd_sum` over
+32-lane simdgroups; the remaining sum over simdgroups is one cheap MLX
+reduction. Recompute runs the same fp32 ops in the same order from the same
+checkpoint, so it reproduces the forward states bit-exactly.
 
-Each GPU thread handles one `(batch, head, j)` triple — one column of the `Dh x Dh`
-state matrix. The thread maintains that column in registers, applies the gate decay,
-accumulates the outer-product update, and dotproducts with queries for output. The
-backward pass uses a matching fused Metal kernel for the adjoint recurrence, with
-MLX parallel reductions for cross-dimension gradients (grad_q, grad_k, grad_gates).
+### Per-kernel thread mapping
 
-### Chunked MLX fallback
+- **SSD** — one thread per `(batch, head, channel)`; the `N`-element state
+  lives in registers across all `L` steps. Checkpoints laid out `[B, nSeg, H,
+  N, Dh]` with `Dh` fastest so simdgroup lanes read/write coalesced.
+- **GLA** — one thread per `(batch·head, j)`; each thread owns one column of
+  the `Dh×Dh` state matrix in registers. `grad_v` is exact per-thread;
+  `grad_q`/`grad_k`/`grad_gates` are j-lane `simd_sum` partials.
+- **RG-LRU** — one thread per `(batch, channel)` owning the scalar `h[d]`.
+  Diagonal state means no cross-lane reductions at all — the simplest plug-in,
+  and the template to copy when adding a new diagonal recurrence.
 
-Both `selective_scan_chunked` and `gla_scan_chunked` avoid Python-level loops using
-a closed-form parallel prefix scan within each chunk of size `chunk_size`:
+### Legacy v0.1 kernels
 
-```
-h[t] = P[t] * (h_prev + cumsum(inp / P))
-where P[t] = exp(cumsum(log_decay))
-```
-
-This reduces Python overhead from O(L) to O(L / chunk_size) dispatches and is
-fully auto-differentiable without a custom VJP.
+The original token-loop kernels (`selective_scan_metal`, `gla_scan_metal`,
+and the chunked pure-MLX fallbacks) are unchanged under
+`mlx_recurrence.legacy` and re-exported at top level. They store the full
+state history for the backward pass (fine for inference and short-sequence
+training) and have no shape constraints. Original benchmarks (M3 Max,
+seq_len=2048): 7.3×/9.1× forward speedup over the Python loop and 19×/31.8×
+fwd+bwd over chunked-MLX autograd for SSM/GLA respectively; charts in
+`benchmarks/`.
 
 ## Citation
 

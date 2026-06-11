@@ -26,6 +26,8 @@ from mlx_recurrence import (
     selective_scan_chunked,
     gla_scan_metal,
     gla_scan_chunked,
+)
+from mlx_recurrence.legacy import (
     _ssm_forward_kernel,
     _ssm_backward_chunked,
     _ssm_backward_metal,
