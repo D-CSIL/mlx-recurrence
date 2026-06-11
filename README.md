@@ -86,17 +86,12 @@ into a small scratch buffer that stays cache-resident during the adjoint sweep.
 ## Installation
 
 ```bash
-# v0.3.0 framework (main branch)
-pip install git+https://github.com/D-CSIL/mlx-recurrence.git
-
-# or from a clone
-git clone https://github.com/D-CSIL/mlx-recurrence.git
-cd mlx-recurrence && pip install -e .
+pip install mlx-recurrence
 ```
 
-(PyPI release planned; install from GitHub until then. The legacy v0.1-era
-kernels need no separate install — they ship inside this package under
-`mlx_recurrence.legacy` with top-level re-exports.)
+(Or from source: `pip install git+https://github.com/D-CSIL/mlx-recurrence.git`.
+The legacy v0.1-era kernels need no separate install — they ship inside this
+package under `mlx_recurrence.legacy` with top-level re-exports.)
 
 Requires: Python >= 3.10, MLX >= 0.22.0, Apple Silicon Mac (Metal GPU).
 
