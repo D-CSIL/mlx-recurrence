@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mlx-recurrence"
-version = "0.2.0.dev0"
+version = "0.3.0"
 description = "A plug-in framework for linear-recurrence Metal kernels on Apple Silicon (SSD, GLA, RG-LRU)"
 readme = "README.md"
 license = { text = "MIT" }
