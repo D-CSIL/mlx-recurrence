@@ -11,6 +11,7 @@ final-state variants):
     ssd     — Mamba-2-style head-wise SSD selective scan
     gla     — Gated Linear Attention recurrence
     rglru   — RG-LRU diagonal recurrence (Griffin / RecurrentGemma)
+    rotlru  — rotational LRU: complex-diagonal scan over (u, w) pairs
 
 The original v0.1 token-loop kernels remain available under
 ``mlx_recurrence.legacy`` and are re-exported at top level for backwards
@@ -32,6 +33,11 @@ from .rglru import (
     rglru_scan,
     rglru_scan_with_state,
     rglru_scan_reference,
+)
+from .rotlru import (
+    rotlru_scan,
+    rotlru_scan_with_state,
+    rotlru_scan_reference,
 )
 
 # --- shared chassis (public for building new plug-in kernels) -------------
@@ -64,6 +70,10 @@ __all__ = [
     "rglru_scan",
     "rglru_scan_with_state",
     "rglru_scan_reference",
+    # v2 rotational LRU
+    "rotlru_scan",
+    "rotlru_scan_with_state",
+    "rotlru_scan_reference",
     # chassis
     "DEFAULT_SEG",
     "get_or_build_kernel",

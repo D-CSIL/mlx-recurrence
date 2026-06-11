@@ -14,6 +14,7 @@ training memory by 12–18× over storing the full state history.
 | `ssd_scan` | Mamba-2-style head-wise SSD selective scan | Mamba-2 / SSM hybrids | `[B, H, Dh, N]` |
 | `gla_scan` | Gated Linear Attention (scalar forget gate, outer-product write) | GLA / linear-attention hybrids | `[B, H, Dh, Dh]` |
 | `rglru_scan` | RG-LRU diagonal scan | Griffin / RecurrentGemma-style | `[B, D]` |
+| `rotlru_scan` | Rotational LRU: complex-diagonal scan (magnitude gate + per-step rotation of 2D channel pairs) | Complex-LRU / S4-style oscillatory memory | `[B, D]` (interleaved pairs) |
 
 Each kernel is a self-contained plug-in on a shared chassis
 (`mlx_recurrence._chassis`) that provides the checkpoint+recompute pattern,
@@ -160,19 +161,47 @@ y = rglru_scan(a, b)                                     # -> [B, L, D]
 y, final_state = rglru_scan_with_state(a, b)             # state: [B, D]
 ```
 
+### Rotational LRU (complex-diagonal scan)
+
+Generalizes `rglru_scan` from a real diagonal gate to a complex one: each
+interleaved channel pair `(u, w)` is scaled by a magnitude gate AND rotated
+by an angle every step — `h_t = a_t · e^{iθ_t} · h_{t-1} + b_t` in complex
+form, the eigenvalue structure of the complex LRU and S4-style oscillatory
+memory. Pass `cos(θ)`/`sin(θ)` computed in MLX host code; gradients w.r.t.
+the angle chain through them automatically.
+
+```python
+from mlx_recurrence import rotlru_scan, rotlru_scan_with_state
+
+B, L, D = 3, 512, 1536
+Dp = D // 2                                              # channel pairs
+
+a     = mx.sigmoid(mx.random.normal((B, L, Dp)))         # magnitude gate per pair
+theta = mx.random.uniform(0.0, 3.14, (B, L, Dp))         # rotation per step
+b     = mx.random.normal((B, L, D))                      # drive, pairs interleaved
+
+y = rotlru_scan(a, mx.cos(theta), mx.sin(theta), b)      # -> [B, L, D]
+y, final_state = rotlru_scan_with_state(a, mx.cos(theta), mx.sin(theta), b)
+```
+
+Validated by the parity suite (forward + every gradient vs reference,
+negative gates, θ=0 reduces exactly to `rglru_scan`, isometry check) and
+exercised by a 10k-step training run; microbenchmarks pending.
+
 Every kernel ships a pure-MLX reference (`*_scan_reference`) for parity
 testing and as a fallback on shapes that violate the constraints.
 
 ## Testing
 
 ```bash
-pytest tests/        # 38 tests, ~3 s, tiny shapes
+pytest tests/        # 45 tests, ~4 s, tiny shapes
 ```
 
-- `tests/test_v2_ssd.py`, `test_v2_gla.py`, `test_v2_rglru.py` — framework
-  parity suites: forward output **and every gradient** compared against the
-  pure-MLX reference (two shape configs per kernel, multi-segment, plus
-  final-state checks). Negative-gate coverage for `rglru`.
+- `tests/test_v2_ssd.py`, `test_v2_gla.py`, `test_v2_rglru.py`,
+  `test_v2_rotlru.py` — framework parity suites: forward output **and every
+  gradient** compared against the pure-MLX reference (two shape configs per
+  kernel, multi-segment, plus final-state checks). Negative-gate coverage
+  for `rglru`/`rotlru`; θ=0→rglru reduction and isometry checks for `rotlru`.
 - `tests/test_v2_legacy_compat.py` — the legacy top-level re-exports keep
   working.
 - `tests/test_kernels.py`, `test_backward_metal.py` — original v0.1 suites,
@@ -207,6 +236,9 @@ checkpoint, so it reproduces the forward states bit-exactly.
 - **RG-LRU** — one thread per `(batch, channel)` owning the scalar `h[d]`.
   Diagonal state means no cross-lane reductions at all — the simplest plug-in,
   and the template to copy when adding a new diagonal recurrence.
+- **Rotational LRU** — one thread per `(batch, pair)` owning the `(u, w)`
+  register pair; the 2×2 rotation is applied in-register. Pair-diagonal, so
+  like RG-LRU it needs no cross-lane reductions.
 
 ### Legacy v0.1 kernels
 
