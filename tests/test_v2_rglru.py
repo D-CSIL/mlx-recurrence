@@ -59,3 +59,26 @@ def test_rglru_invalid_shapes():
     a, x = _make_inputs(1, 32, 16)
     with pytest.raises(ValueError):
         mx.eval(rglru_scan(a, x, seg=32))
+
+
+def test_rglru_parity_negative_gates():
+    """The kernel must be range-agnostic in ``a`` — it only multiplies.
+
+    Consumers (e.g. HELIX's oscillator-gated HSL) drive ``a`` in (-1, 1),
+    outside RG-LRU's native (0, 1) envelope; this pins forward + gradient
+    parity for sign-flipping gates in the package's own suite."""
+    B, L, D, seg = 2, 64, 64, 32
+    mx.random.seed(7)
+    a = mx.random.uniform(low=-0.99, high=0.99, shape=(B, L, D))
+    x = mx.random.normal(shape=(B, L, D)) * 0.5
+    mx.eval(a, x)
+
+    ok, report = parity_check(
+        kernel_fn=lambda *args: rglru_scan(*args, seg=seg),
+        reference_fn=rglru_scan_reference,
+        inputs=(a, x),
+        arg_names=["a", "x"],
+        grad_argnums=(0, 1),
+        label="rglru[negative gates]",
+    )
+    assert ok, f"RG-LRU negative-gate parity failed: {report}"
