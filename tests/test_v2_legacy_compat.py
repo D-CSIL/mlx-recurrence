@@ -62,6 +62,15 @@ def test_legacy_gla_runs_tiny():
     assert y.shape == (B, L, H, Dh)
 
 
-def test_version_is_dev():
+def test_version_matches_pyproject():
+    """__version__ must stay in sync with pyproject.toml (single-source-of-
+    truth check — catches one-sided release bumps)."""
+    import re
+    from pathlib import Path
+
     import mlx_recurrence
-    assert mlx_recurrence.__version__ == "0.2.0.dev0"
+
+    pyproject = Path(mlx_recurrence.__file__).parent.parent / "pyproject.toml"
+    m = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(), re.M)
+    assert m, "version not found in pyproject.toml"
+    assert mlx_recurrence.__version__ == m.group(1)
