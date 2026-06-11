@@ -26,16 +26,30 @@ without touching the original repo or the live D-CSIL-3 training tree.
   (run pytest first in any new environment).
 
 ## GitHub status (updated 2026-06-11)
-**PUSHED:** `v2-framework` branch is live on github.com/D-CSIL/mlx-recurrence
-(commit 6e586be7, remote name `github` in this clone). NOTE: the repo is
-**PUBLIC**, not private as previously recorded. README was refreshed before
-push (v2 API docs, real-run validation numbers from docs/validation/, legacy
-section preserved); local agent-hook logs/ untracked. `main` is untouched —
-merge decision still Paul's.
+**MERGED TO MAIN (Paul's call, same day):** v2 framework is the public face of
+github.com/D-CSIL/mlx-recurrence (main @ 6a587663+; remote name `github` in
+this clone). NOTE: the repo is **PUBLIC**, not private as previously recorded.
+README fully refreshed: benchmarks lead with vs-NO-kernels numbers (19x/31.8x
+backward — Paul's framing correction), v2-vs-v1 table second with combined
+single-shape measurement deferred to post-run; v2 API docs; legacy section
+preserved; agent-hook logs/ untracked. Branch v2-framework synced with main.
+The committed .dev/SESSION_STATE.md is now public (benign: paths/plans, no
+secrets) — prune if Paul prefers.
+
+## NEW PLUG-IN: rotlru (2026-06-11 overnight, Paul-authorized autonomous build)
+`mlx_recurrence/rotlru.py` — rotational LRU: pair-diagonal complex scan
+h_t = a_t·R(θ_t)·h_{t-1} + b_t (interleaved (u,w) pairs; cs/sn host-computed,
+angle grads chain through them). Chassis pattern, no simd_sum needed (like
+rglru). 7/7 parity tests (`tests/test_v2_rotlru.py`): fwd+all-grads vs
+reference ×2 configs, negative gates, θ=0 ≡ rglru reduction, norm
+preservation, final-state, constraint raises. Built for HELIX's HSL rotation
+variant (third bake-off arm). NOT yet exported from `__init__.py` — deferred
+because a live bake-off process freshly imports the package via HELIX's
+bridge; add the export + README section after runs complete.
 
 ## Remaining
-1. Merge v2-framework -> main (Paul's call; suggest after the live run ends
-   ~2026-06-15 so the multi-day stability note can go in the same merge)
-2. Gated DeltaNet implementation (3 phases, design doc ready)
-3. PyPI release of 0.2.0 once merged (README install section says
-   from-source for v2 until then)
+0. Export rotlru in `__init__.py` + README section (after overnight bake-off)
+1. Multi-day stability note in README once the live run completes (~2026-06-15)
+2. Single-shape v2-vs-no-kernels benchmark (GPU-gated, replaces README estimate)
+3. Gated DeltaNet implementation (3 phases, design doc ready)
+4. PyPI release 0.2.0 (README points from-source until then)
