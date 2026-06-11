@@ -39,8 +39,36 @@ L=512:
 
 Full report: [`docs/validation/V3_VALIDATION_REPORT_20260610.md`](docs/validation/V3_VALIDATION_REPORT_20260610.md)
 (the consuming training repo names these kernels "v3" in its shim — same code).
+Note the baseline above is a run *already using fused v0.1-style kernels* —
+the gains over having no custom kernels at all are far larger (next section).
 
-### Kernel microbenchmarks (training shapes: B=3, L=512, H=12, Dh=64)
+## Benchmarks
+
+Two baselines matter, and they answer different questions:
+
+1. **vs. no custom kernels at all** — the Python per-step loop or chunked-MLX
+   fallback a user would otherwise write. This is the speedup you get by
+   adopting the package.
+2. **v2 vs. v0.1-style full-history kernels** — what the
+   checkpoint+recompute redesign adds on top, mainly for training memory.
+
+### 1. Fused kernels vs. no custom kernels (M3 Max, seq_len=2048)
+
+| Pass | SSM | GLA |
+|---|---|---|
+| Forward — fused kernel vs Python per-step loop | **7.3×** | **9.1×** |
+| Forward + backward — fused VJP vs chunked-MLX autograd | **19.0×** | **31.8×** |
+
+(Measured for the v0.1 release; charts in `benchmarks/`. Without fused
+kernels, training these recurrences on Apple Silicon is impractical above
+seq_len ≈ 512 — the backward pass is the killer.)
+
+The v2 kernels measured faster still at training shapes (next table), so
+vs-no-kernels speedups for v2 are expected to be at least this large. A
+direct single-shape v2-vs-no-kernels measurement is planned once the current
+production run frees the GPU, and will replace this estimate.
+
+### 2. v2 vs. v0.1-style full-history kernels (training shapes: B=3, L=512, H=12, Dh=64)
 
 | Kernel | fwd | fwd + bwd | peak memory |
 |---|---|---|---|
