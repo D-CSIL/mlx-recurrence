@@ -40,6 +40,8 @@ L=512:
 
 Full report: [`docs/validation/V3_VALIDATION_REPORT_20260610.md`](docs/validation/V3_VALIDATION_REPORT_20260610.md)
 (the consuming training repo names these kernels "v3" in its shim — same code).
+
+![Production validation](benchmarks/v2_production_validation.png)
 Note the baseline above is a run *already using fused v0.1-style kernels* —
 the gains over having no custom kernels at all are far larger (next section).
 
@@ -70,6 +72,8 @@ direct single-shape v2-vs-no-kernels measurement is planned once the current
 production run frees the GPU, and will replace this estimate.
 
 ### 2. v2 vs. v0.1-style full-history kernels (training shapes: B=3, L=512, H=12, Dh=64)
+
+![v2 kernel benchmarks](benchmarks/v2_kernel_benchmarks.png)
 
 | Kernel | fwd | fwd + bwd | peak memory |
 |---|---|---|---|
@@ -250,6 +254,20 @@ training) and have no shape constraints. Original benchmarks (M3 Max,
 seq_len=2048): 7.3×/9.1× forward speedup over the Python loop and 19×/31.8×
 fwd+bwd over chunked-MLX autograd for SSM/GLA respectively; charts in
 `benchmarks/`.
+
+## Receipts
+
+Every number in this README traces to a committed artifact or a command you
+can run:
+
+| Claim | Receipt |
+|---|---|
+| 12–18× memory, 1.49–1.86× kernel fwd+bwd | [`docs/validation/V3_VALIDATION_REPORT_20260610.md`](docs/validation/V3_VALIDATION_REPORT_20260610.md) §microbenchmarks (measured 2026-06-10, M3 Max) |
+| Production hot-swap: 23.9→10.3 GB, 1,074→~1,500 tok/s, parity ~1e-7 | same report — timeline, gate table, probe details |
+| Forward + every-gradient correctness, all four kernels | `pytest tests/` — 46 tests vs pure-MLX references (`*_scan_reference`), incl. negative-gate, final-state, θ=0→rglru reduction, isometry checks |
+| v0.1 fused-vs-naive 7.3×/9.1× fwd, 19×/31.8× fwd+bwd | `benchmarks/bench_scan.py` / `bench_chart.py` + charts in `benchmarks/` (v0.1 release) |
+| Charts | generated directly from the report's measured values; sources cited in each image footer |
+| "Believed first public fused Metal training kernels" | good-faith priority claim — carried publicly since the v0.1 release; we know of no prior public equivalent and will gladly amend if shown one |
 
 ## Citation
 
