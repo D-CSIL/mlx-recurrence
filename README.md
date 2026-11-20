@@ -47,6 +47,11 @@ the gains over having no custom kernels at all are far larger (next section).
 
 ## Benchmarks
 
+[HELIX single-token decode example and data](benchmarks/helix_decode/README.md):
+two inference-only Metal shaders for a fixed-shape routed feed-forward layer,
+a runnable weight-free benchmark, and synchronized measurements alongside
+the existing rotational scan. This example is separate from the recurrence API.
+
 Two baselines matter, and they answer different questions:
 
 1. **vs. no custom kernels at all** — the Python per-step loop or chunked-MLX
